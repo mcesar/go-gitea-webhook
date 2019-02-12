@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"syscall"
 
@@ -36,13 +37,13 @@ type Config struct {
 	Repositories []ConfigRepository
 }
 
-func panicIf(err error, what ...string) {
+func check(err error, what ...string) {
 	if err != nil {
 		if len(what) == 0 {
-			panic(err)
+			log.Fatal(err)
 		}
 
-		panic(errors.New(err.Error() + (" " + what[0])))
+		log.Fatal(errors.New(err.Error() + (" " + what[0])))
 	}
 }
 
@@ -73,7 +74,7 @@ func main() {
 
 	//open log file
 	writer, err := os.OpenFile(config.Logfile, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
-	panicIf(err)
+	check(err)
 
 	//close logfile on exit
 	defer func() {
@@ -99,20 +100,20 @@ func main() {
 
 func loadConfig(configFile string) Config {
 	var file, err = os.Open(configFile)
-	panicIf(err)
+	check(err)
 
 	// close file on exit and check for its returned error
 	defer func() {
-		panicIf(file.Close())
+		check(file.Close())
 	}()
 
 	buffer := make([]byte, 1024)
 
 	count, err := file.Read(buffer)
-	panicIf(err)
+	check(err)
 
 	err = json.Unmarshal(buffer[:count], &config)
-	panicIf(err)
+	check(err)
 
 	return config
 }
@@ -138,29 +139,30 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 
 	//read request body
 	var data, err = ioutil.ReadAll(r.Body)
-	panicIf(err, "while reading request body")
+	check(err, "while reading request body")
 
 	//unmarshal request body
 	var hook api.PushPayload
 	err = json.Unmarshal(data, &hook)
-	panicIf(err, fmt.Sprintf("while unmarshaling request base64(%s)", b64.StdEncoding.EncodeToString(data)))
+	check(err, fmt.Sprintf("while unmarshaling request base64(%s)", b64.StdEncoding.EncodeToString(data)))
 
 	log.Printf("received webhook on %s", hook.Repo.FullName)
 
 	//find matching config for repository name
 	for _, repo := range config.Repositories {
 
-		if repo.Name == hook.Repo.FullName || repo.Name == hook.Repo.HTMLURL {
+		match, err := regexp.MatchString(repo.Name, hook.Repo.FullName)
+		if match && err == nil {
 
 			//check if the secret in the configuration matches the request
-			if repo.Secret != hook.Secret {
+			if repo.Secret != "" && repo.Secret != hook.Secret {
 				log.Printf("secret mismatch for repo %s\n", repo.Name)
 				continue
 			}
 
 			//execute commands for repository
 			for _, cmd := range repo.Commands {
-				var command = exec.Command(cmd)
+				var command = exec.Command(cmd, string(data))
 				out, err := command.Output()
 				if err != nil {
 					log.Println(err)
